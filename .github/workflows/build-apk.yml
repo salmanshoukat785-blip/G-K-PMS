@@ -1,1 +1,77 @@
+name: Build GK PMS APK
 
+# Runs on every push to main/master (including when you upload the project .zip),
+# on version tags (v1.0 ...) and from the Actions tab ("Run workflow").
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Normal repo: project files are in the root.
+      # Zip upload: the project is inside a .zip in the root - unzip it and build from there.
+      - name: Find the project (or unzip it)
+        run: |
+          set -e
+          if [ -f settings.gradle.kts ]; then
+            PROJECT_DIR=.
+          else
+            ZIP=$(ls -t *.zip 2>/dev/null | head -1 || true)
+            if [ -z "$ZIP" ]; then
+              echo "::error::No project files and no .zip file found in the repository root"
+              exit 1
+            fi
+            echo "Unzipping $ZIP"
+            rm -rf _project && mkdir _project
+            unzip -q "$ZIP" -d _project
+            SETTINGS=$(find _project -name settings.gradle.kts | head -1)
+            if [ -z "$SETTINGS" ]; then
+              echo "::error::settings.gradle.kts not found inside $ZIP"
+              exit 1
+            fi
+            PROJECT_DIR=$(dirname "$SETTINGS")
+          fi
+          echo "Project folder: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Build debug APK
+        run: |
+          cd "$PROJECT_DIR"
+          gradle assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/GK-PMS.apk"
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GK-PMS-apk
+          path: GK-PMS.apk
+
+      # Download link: Releases page of the repository
+      - name: Publish APK to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          name: GK PMS - build ${{ github.run_number }}
+          body: Install GK-PMS.apk on your Android phone.
+          files: GK-PMS.apk
